@@ -2,5 +2,5 @@ streamlit
 pandas
 openrouteservice
 numpy
-fpdf
+fpdf2
 openpyxl
