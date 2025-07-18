@@ -1,76 +1,110 @@
-# 🗺️ Optimal Site Visit Route Planner
+## 🚗 Optimal Site Visit Route Planner
 
-This Streamlit web app helps you **plan the most efficient route** when visiting multiple locations. Simply upload an Excel file with **latitude, longitude, and address**, and the app will:
+Plan the most efficient route for visiting multiple sites using real road distances and travel time. This tool helps you save cost and time by optimizing the visit order using **OpenRouteService (ORS)** and **OR-Tools**.
 
-- Compute the distances between all sites
-- Solve the **Traveling Salesman Problem (TSP)** using **Google OR-Tools**
-- Determine the optimal visit order to **minimize total travel distance**
-- Display an **interactive route map**
-- Allow you to download the itinerary as **CSV** and **PDF**
+📍 Try the live app: [https://optimal-site-visit-route-planner.streamlit.app](https://optimal-site-visit-route-planner.streamlit.app)
 
 ---
 
-## 🚀 Live App
+### ✨ Features
 
-👉 [Launch the App](#)
-
----
-
-## 📁 Input Format
-
-The Excel file must contain the following columns:
-
-| latitude | longitude | address       |
-|----------|-----------|----------------|
-| 6.5244   | 3.3792    | Ikeja, Lagos   |
-| 7.3775   | 3.9470    | Abeokuta, Ogun |
-| ...      | ...       | ...            |
-
-- Column names should be exactly: `latitude`, `longitude`, `address` (case-insensitive).
-- Ensure coordinates are in decimal format.
+* 🔁 **TSP-based route optimization** using road networks (not straight-line distance)
+* 📍 **Optional user location** as starting point
+* 🗺️ Uses **OpenRouteService API** for real-time road distance and duration
+* 📄 Upload Excel file containing site data (lat, lon, address)
+* 📊 Outputs optimized order, travel time, and distance
+* 🧾 Downloadable **PDF** and **CSV** of the itinerary
 
 ---
 
-## ⚙️ Features
+### 📂 Input Format
 
-✅ Upload Excel files  
-✅ Automatically computes pairwise distances  
-✅ Efficient TSP solution using Google OR-Tools  
-✅ Visualize visit order with an interactive **Folium** map  
-✅ Download itinerary as **CSV** and **PDF**  
-✅ Fast and user-friendly interface via **Streamlit**
+Upload an Excel file (`.xlsx`) with the following **required columns**:
+
+| address | latitude | longitude |
+| ------- | -------- | --------- |
+| Site A  | 7.123456 | 3.123456  |
+| Site B  | 7.223456 | 3.223456  |
+
+You may optionally enter your **current location** (latitude & longitude) to use as the starting point.
 
 ---
 
-## 🧠 Tech Stack
-- Python
-- Streamlit – for UI
-- Pandas / NumPy – for data handling
-- geopy – for calculating distances
-- Google OR-Tools – to solve TSP
-- Folium – for interactive maps
-- fpdf – to generate PDF itinerary
+### 📦 Installation
 
-## 📦 Dependencies
-- streamlit
-- pandas
-- numpy
-- geopy
-- folium
-- streamlit-folium
-- openpyxl
-- fpdfortools
+```bash
+pip install -r requirements.txt
+```
 
-## ✨ Future Features
-- Estimated travel time based on speed
-- Cost estimation (fuel or transport)
-- Time slot scheduling
-- REST API integration
+#### `requirements.txt`:
 
-## 👤 Author
+```
+streamlit
+pandas
+openrouteservice
+numpy
+fpdf
+openpyxl
+```
 
-Emmanuel Oludare Ejifolabi
-AI & Signal Processing Enthusiast 🚀
+#### `packages.txt` (for Streamlit Cloud deployment):
 
+```
+libglib2.0-0
+libsm6
+libxrender1
+libxext6
+```
 
+---
 
+### 🛠 How It Works
+
+* Uses **OpenRouteService** API to get the **distance and duration** matrix between all sites.
+* Solves the **Travelling Salesman Problem (TSP)** using **Google OR-Tools** to find the optimal route.
+* Creates a table of optimized visit order, road distances, and estimated times.
+* Outputs downloadable **PDF** and **CSV** itineraries.
+
+---
+
+### 🧪 Run Locally
+
+```bash
+streamlit run optimal_route_app.py
+```
+
+---
+
+### 🔐 Get Your Free ORS API Key
+
+1. Visit [https://openrouteservice.org/dev/#/signup](https://openrouteservice.org/dev/#/signup)
+2. Sign up and create a new token.
+3. Replace the placeholder `YOUR_ORS_API_KEY` in the code with your key.
+
+---
+
+### ✅ Deployment on Streamlit Cloud
+
+1. Push your project (including `optimal_route_app.py`, `requirements.txt`, and `packages.txt`) to GitHub.
+2. Go to [https://streamlit.io/cloud](https://streamlit.io/cloud) and deploy your repo.
+3. Set the main file to `optimal_route_app.py`.
+
+---
+
+### 📄 Output Sample
+
+| Visit Order | Address | Distance (km) | Duration (min) |
+| ----------- | ------- | ------------- | -------------- |
+| 1           | Site A  | 0.0           | 0.0            |
+| 2           | Site B  | 5.2           | 12.3           |
+| ...         | ...     | ...           | ...            |
+
+---
+
+### 🙋🏽‍♂️ Author
+
+**Emmanuel Oludare Ejifolabi**
+AI & Signal Processing Enthusiast
+GitHub: [@ejifolabi](https://github.com/ejifolabi)
+
+---
