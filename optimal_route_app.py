@@ -1,162 +1,145 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import openrouteservice
-from openrouteservice import distance_matrix
+from openrouteservice import convert
+import folium
+from streamlit_folium import st_folium
 from io import BytesIO
-import os
 from fpdf import FPDF
-import math
-import base64
+from geopy.distance import geodesic
 
-# ORS API client
-ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjllNTVjYmRjZjRjMzQ2NTE5NzY1ZjhkZGQzYjcwMDYwIiwiaCI6Im11cm11cjY0In0="
-client = openrouteservice.Client(key=ORS_API_KEY)
+# ------------------------------
+# CONFIGURATION
+# ------------------------------
+API_KEY = st.secrets["ORS_API_KEY"]  # Save your ORS key in Streamlit Secrets
+client = openrouteservice.Client(key=API_KEY)
 
-st.set_page_config(page_title="Optimal Site Visit Planner", layout="wide")
-
-st.title("📍 Optimal Site Visit Route Planner")
-st.markdown("""
-Upload an Excel file with columns: `Latitude`, `Longitude`, and `Address` to determine the most cost-effective site visit route using real road distances and travel time.
-""")
-
-uploaded_file = st.file_uploader("📤 Upload Excel File", type=["xlsx"])
-
-# Optional user start point
-with st.expander("📍 Optional: Add Your Starting Location"):
-    start_lat = st.text_input("Latitude")
-    start_lon = st.text_input("Longitude")
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth radius in km
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = phi2 - phi1
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-def get_distance_matrix(coords):
-    res = client.distance_matrix(
-        locations=coords,
-        profile='driving-car',
-        metrics=['distance', 'duration'],
-        resolve_locations=False
-    )
-    return np.array(res['distances']), np.array(res['durations'])
-
-def nearest_neighbor(dist_matrix, start_idx):
-    n = len(dist_matrix)
-    visited = [False]*n
-    order = [start_idx]
-    visited[start_idx] = True
-    for _ in range(n-1):
-        last = order[-1]
-        next_idx = np.argmin([dist_matrix[last][j] if not visited[j] else float('inf') for j in range(n)])
-        order.append(next_idx)
-        visited[next_idx] = True
-    return order
-
-# --------------------------------------------------------------------------------
-
-def create_pdf_itinerary(addresses, distances_km, times_min):
+# ------------------------------
+# PDF GENERATION
+# ------------------------------
+def create_pdf_itinerary(addresses, distances_km, durations_min):
     pdf = FPDF()
     pdf.add_page()
+    pdf.set_font("Arial", size=12)
 
-    # Add a Unicode-compatible font (DejaVuSans or fallback)
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    if not os.path.exists(font_path):
-        font_path = "DejaVuSans.ttf"
-
-    pdf.add_font("DejaVu", "", font_path, uni=True)
-    pdf.set_font("DejaVu", "", 12)
-
-    pdf.cell(200, 10, "Optimal Visit Itinerary", ln=True, align="C")
+    pdf.cell(200, 10, txt="Optimal Site Visit Itinerary", ln=True, align='C')
     pdf.ln(10)
 
-    headers = ["Visit", "Address", "Distance (km)", "Duration (min)"]
-    col_widths = [20, 90, 40, 40]
-
-    # Header row
-    for i, h in enumerate(headers):
-        pdf.cell(col_widths[i], 10, h, border=1)
-    pdf.ln()
-
-    # Data rows
-    for i, (addr, dist, dur) in enumerate(zip(addresses, distances_km, times_min), 1):
-        pdf.cell(col_widths[0], 10, str(i), border=1)
-        pdf.cell(col_widths[1], 10, addr[:50], border=1)
-        pdf.cell(col_widths[2], 10, f"{dist:.2f}", border=1)
-        pdf.cell(col_widths[3], 10, f"{dur:.2f}", border=1)
-        pdf.ln()
+    for i, addr in enumerate(addresses):
+        text = f"{i+1}. {addr}"
+        if i < len(distances_km):
+            text += f"\n   Distance to next: {distances_km[i]:.2f} km, Time: {durations_min[i]:.2f} mins"
+        pdf.multi_cell(0, 10, txt=text)
 
     buffer = BytesIO()
     pdf.output(buffer)
     buffer.seek(0)
     return buffer
-# ---------------------------------------------------------------------------
+
+# ------------------------------
+# DISTANCE & DURATION WITH ORS
+# ------------------------------
+def get_route_info(coords):
+    route = client.directions(coords, profile='driving-car', format='geojson')
+    summary = route['features'][0]['properties']['summary']
+    distance_km = summary['distance'] / 1000
+    duration_min = summary['duration'] / 60
+    return distance_km, duration_min
+
+# ------------------------------
+# NEAREST POINT (GREEDY TSP)
+# ------------------------------
+def solve_tsp_greedy(coords):
+    visited = [0]
+    while len(visited) < len(coords):
+        last = coords[visited[-1]]
+        nearest = min(
+            [(i, geodesic(last, coords[i]).km) for i in range(len(coords)) if i not in visited],
+            key=lambda x: x[1]
+        )[0]
+        visited.append(nearest)
+    return visited
+
+# ------------------------------
+# MAPPING FUNCTION
+# ------------------------------
+def show_map(addresses, lats, lons, distances_km=None, durations_min=None):
+    start_lat, start_lon = lats[0], lons[0]
+    m = folium.Map(location=[start_lat, start_lon], zoom_start=12)
+
+    for i, (addr, lat, lon) in enumerate(zip(addresses, lats, lons)):
+        popup_text = f"{i+1}. {addr}"
+        if distances_km and durations_min and i < len(distances_km):
+            popup_text += f"<br>Distance: {distances_km[i]:.2f} km<br>Time: {durations_min[i]:.2f} min"
+
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(popup_text, max_width=300),
+            icon=folium.Icon(color="green" if i == 0 else "blue", icon="info-sign")
+        ).add_to(m)
+
+    route_points = list(zip(lats, lons))
+    folium.PolyLine(locations=route_points, color="red", weight=3).add_to(m)
+
+    st_folium(m, width=700, height=500)
+
+# ------------------------------
+# MAIN APP
+# ------------------------------
+st.title("Optimal Site Visit Route Planner")
+st.write("Upload an Excel file with columns: `Latitude`, `Longitude`, and `Address`")
+
+user_lat = st.text_input("Enter your current Latitude (optional)")
+user_lon = st.text_input("Enter your current Longitude (optional)")
+
+uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    if {'Latitude', 'Longitude', 'Address'}.issubset(df.columns):
-        st.success("✅ File loaded successfully.")
 
-        coordinates = list(zip(df['Longitude'], df['Latitude']))
+    if not all(col in df.columns for col in ['Latitude', 'Longitude', 'Address']):
+        st.error("Excel must contain 'Latitude', 'Longitude', and 'Address' columns")
+    else:
+        latitudes = df['Latitude'].tolist()
+        longitudes = df['Longitude'].tolist()
         addresses = df['Address'].tolist()
 
-        # Handle optional start location
-        if start_lat and start_lon:
+        if user_lat and user_lon:
             try:
-                user_coord = (float(start_lon), float(start_lat))
-                coordinates.insert(0, user_coord)
-                addresses.insert(0, "📍 User Starting Location")
-                st.info("Using custom user start location.")
+                user_coord = (float(user_lat), float(user_lon))
+                latitudes.insert(0, user_coord[0])
+                longitudes.insert(0, user_coord[1])
+                addresses.insert(0, "User Location")
             except:
-                st.warning("Invalid coordinates. Skipping custom start.")
-        
-        # Calculate real road distance and time matrix
-        dist_matrix, time_matrix = get_distance_matrix(coordinates)
+                st.warning("Invalid coordinates. Skipping user location.")
 
-        # Determine start and farthest end
-        if start_lat and start_lon:
-            start_idx = 0
-        else:
-            # Find closest point as starting location
-            origin = (coordinates[0][1], coordinates[0][0])
-            dists = [haversine(origin[0], origin[1], lat, lon) for lon, lat in coordinates]
-            start_idx = int(np.argmin(dists))
+        coords = list(zip(latitudes, longitudes))
 
-        # Get order using greedy NN
-        visit_order = nearest_neighbor(dist_matrix, start_idx)
-        ordered_addresses = [addresses[i] for i in visit_order]
+        # Solve TSP Greedily
+        order = solve_tsp_greedy(coords)
 
-        # Ordered distances from last stop
+        ordered_coords = [coords[i] for i in order]
+        ordered_addresses = [addresses[i] for i in order]
+        ordered_latitudes = [latitudes[i] for i in order]
+        ordered_longitudes = [longitudes[i] for i in order]
+
         ordered_distances_km = []
         ordered_times_min = []
-        for i in range(len(visit_order)-1):
-            a, b = visit_order[i], visit_order[i+1]
-            ordered_distances_km.append(dist_matrix[a][b]/1000)
-            ordered_times_min.append(time_matrix[a][b]/60)
-        ordered_distances_km.insert(0, 0)
-        ordered_times_min.insert(0, 0)
+        for i in range(len(ordered_coords) - 1):
+            d_km, t_min = get_route_info([ordered_coords[i][::-1], ordered_coords[i+1][::-1]])
+            ordered_distances_km.append(d_km)
+            ordered_times_min.append(t_min)
 
-        # Show itinerary
-        itinerary_df = pd.DataFrame({
-            "Visit Order": range(1, len(ordered_addresses)+1),
-            "Address": ordered_addresses,
-            "Distance from Previous (km)": ordered_distances_km,
-            "Travel Time (min)": ordered_times_min
-        })
+        st.success("Optimal route calculated!")
 
-        st.subheader("📋 Optimized Visit Itinerary")
-        st.dataframe(itinerary_df, use_container_width=True)
+        st.subheader("Map View")
+        show_map(ordered_addresses, ordered_latitudes, ordered_longitudes, ordered_distances_km, ordered_times_min)
 
-        # Download CSV
-        csv = itinerary_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download CSV", data=csv, file_name="site_visit_itinerary.csv", mime='text/csv')
-
-        # Download PDF
+        st.subheader("Download PDF Itinerary")
         pdf_buffer = create_pdf_itinerary(ordered_addresses, ordered_distances_km, ordered_times_min)
-        st.download_button("📥 Download PDF", data=pdf_buffer, file_name="site_visit_itinerary.pdf", mime="application/pdf")
-
-    else:
-        st.error("❌ The Excel file must contain 'Latitude', 'Longitude', and 'Address' columns.")
+        st.download_button(
+            label="📄 Download Itinerary",
+            data=pdf_buffer,
+            file_name="itinerary.pdf",
+            mime="application/pdf"
+        )
