@@ -77,8 +77,9 @@ def create_pdf_itinerary(ordered_addresses, total_distance):
     pdf.ln(5)
     pdf.cell(0, 10, txt=f"Total Distance: {total_distance:.2f} km", ln=1)
     
-    pdf_output = BytesIO()
-    pdf.output(pdf_output)
+    # Fix: return PDF as bytes via 'S' (string) output
+    pdf_bytes = pdf.output(dest='S').encode('latin1')
+    pdf_output = BytesIO(pdf_bytes)
     pdf_output.seek(0)
     return pdf_output
 
