@@ -1,112 +1,116 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import folium
 from streamlit_folium import st_folium
-from openrouteservice import Client
-from io import BytesIO
-from fpdf import FPDF
+from geopy.distance import geodesic
 
-st.set_page_config(page_title="Visit Planner", layout="wide")
-st.title("📍 Location Proximity Sorter")
+st.set_page_config(page_title="Smart Site Visit Route", layout="wide")
 
-# ===== ORS API KEY =====
-API_KEY = st.secrets["ORS_API_KEY"]
-client = Client(key=API_KEY)
+st.title("📍 Smart Site Visit Route Planner")
+st.markdown("Upload an Excel file containing site coordinates: **Latitude, Longitude, Address** (case-insensitive).")
 
-# ===== File Upload =====
-uploaded_file = st.file_uploader("Upload an Excel file with columns: 'Address', 'Latitude', 'Longitude'", type=["xlsx"])
-if not uploaded_file:
-    st.warning("Please upload an Excel file to proceed.")
-    st.stop()
+# Upload Excel file
+uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+start_lat = st.text_input("Optional Start Latitude", placeholder="e.g. 6.5244")
+start_lon = st.text_input("Optional Start Longitude", placeholder="e.g. 3.3792")
 
-# ===== Read Excel =====
-df = pd.read_excel(uploaded_file)
-required_columns = {"Latitude", "Longitude", "Address"}
-if not required_columns.issubset(df.columns):
-    st.error(f"Your Excel must contain: {required_columns}")
-    st.stop()
+@st.cache_data
+def read_data(file):
+    df = pd.read_excel(file)
+    col_map = {col.lower(): col for col in df.columns}
+    required = ['latitude', 'longitude', 'address']
+    
+    if not all(col in col_map for col in required):
+        st.error(f"Your Excel must contain columns: {required}")
+        return None
 
-# ===== Select Start Location =====
-start_location = st.selectbox("Select your current location (start point):", df["Address"])
-start_row = df[df["Address"] == start_location].iloc[0]
-start_coords = (start_row["Longitude"], start_row["Latitude"])
+    df.rename(columns={
+        col_map['latitude']: 'lat',
+        col_map['longitude']: 'lon',
+        col_map['address']: 'address'
+    }, inplace=True)
 
-# ===== Limit for Speed =====
-MAX_LOCATIONS = 20
-if len(df) > MAX_LOCATIONS:
-    st.info(f"Showing only first {MAX_LOCATIONS} locations for performance.")
-    df = df.head(MAX_LOCATIONS)
+    return df[['lat', 'lon', 'address']]
 
-# ===== Distance Calculation =====
-@st.cache_data(show_spinner="Calculating road distances...")
-def get_sorted_by_distance(start_coords, df):
-    results = []
-    for _, row in df.iterrows():
-        coord = (row["Longitude"], row["Latitude"])
-        if coord == start_coords:
-            continue
-        try:
-            route = client.directions(
-                coordinates=[start_coords, coord],
-                profile='driving-car',
-                format='json'
-            )
-            dist_km = route['routes'][0]['summary']['distance'] / 1000
-            results.append({
-                "Address": row["Address"],
-                "Latitude": row["Latitude"],
-                "Longitude": row["Longitude"],
-                "Distance (km)": round(dist_km, 2)
-            })
-        except Exception as e:
-            st.error(f"Error fetching route to {row['Address']}: {e}")
-    return pd.DataFrame(sorted(results, key=lambda x: x["Distance (km)"]))
+@st.cache_data
+def compute_closest_path(df, user_start=None):
+    visited = []
+    path = []
+    total_distance = 0.0
 
-# ===== Compute =====
-sorted_df = get_sorted_by_distance(start_coords, df)
+    if user_start:
+        current_point = user_start
+        path.append({"address": "User Start", "lat": current_point[0], "lon": current_point[1], "distance_km": 0})
+    else:
+        first = df.iloc[0]
+        current_point = (first['lat'], first['lon'])
+        visited.append(0)
+        path.append({"address": first['address'], "lat": first['lat'], "lon": first['lon'], "distance_km": 0})
 
-# ===== Display Table =====
-st.subheader("📌 Locations Sorted by Proximity to You")
-st.dataframe(sorted_df.reset_index(drop=True), use_container_width=True)
+    while len(visited) < len(df):
+        min_dist = float('inf')
+        next_index = -1
+        for i, row in df.iterrows():
+            if i in visited:
+                continue
+            dist = geodesic(current_point, (row['lat'], row['lon'])).km
+            if dist < min_dist:
+                min_dist = dist
+                next_index = i
 
-# ===== PDF Download =====
-def create_pdf(data):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, "Sorted Visit List", ln=True)
+        visited.append(next_index)
+        next_site = df.iloc[next_index]
+        current_point = (next_site['lat'], next_site['lon'])
+        total_distance += min_dist
+        path.append({
+            "address": next_site['address'],
+            "lat": next_site['lat'],
+            "lon": next_site['lon'],
+            "distance_km": round(min_dist, 2)
+        })
 
-    pdf.set_font("Arial", "", 12)
-    for i, row in data.iterrows():
-        pdf.cell(0, 10, f"{i + 1}. {row['Address']} - {row['Distance (km)']} km", ln=True)
+    return path, round(total_distance, 2)
 
-    buffer = BytesIO()
-    pdf_output = pdf.output(dest='S').encode('latin1')
-    buffer.write(pdf_output)
-    buffer.seek(0)
-    return buffer
+if uploaded_file:
+    df = read_data(uploaded_file)
+    if df is not None:
+        st.success(f"{len(df)} locations loaded.")
 
-pdf = create_pdf(sorted_df)
-st.download_button("📄 Download Visit Order (PDF)", data=pdf, file_name="visit_plan.pdf", mime="application/pdf")
+        # Validate user input for optional start
+        if start_lat and start_lon:
+            try:
+                user_start_coords = (float(start_lat), float(start_lon))
+            except:
+                st.warning("Invalid coordinates provided. Starting from first location.")
+                user_start_coords = None
+        else:
+            user_start_coords = None
 
-# ===== Map Display =====
-st.subheader("🗺️ Map of Locations")
-m = folium.Map(location=[start_row["Latitude"], start_row["Longitude"]], zoom_start=10)
+        with st.spinner("Calculating optimized route..."):
+            path, total_distance = compute_closest_path(df, user_start=user_start_coords)
 
-# Start point
-folium.Marker(
-    location=[start_row["Latitude"], start_row["Longitude"]],
-    popup="Start: " + start_row["Address"],
-    icon=folium.Icon(color="green")
-).add_to(m)
+        st.subheader("📍 Visit Order by Closest Proximity")
+        path_df = pd.DataFrame(path)
+        st.dataframe(path_df[["address", "distance_km"]].rename(columns={"distance_km": "Distance (km)"}))
 
-# Other locations
-for _, row in sorted_df.iterrows():
-    folium.Marker(
-        location=[row["Latitude"], row["Longitude"]],
-        popup=f"{row['Address']} ({row['Distance (km)']} km)",
-        icon=folium.Icon(color="blue", icon="info-sign")
-    ).add_to(m)
+        st.success(f"Total estimated travel distance: {total_distance} km")
 
-# Show map
-st_folium(m, width=700, height=500)
+        # Show on map
+        st.subheader("🗺️ Route Map")
+        route_map = folium.Map(location=[path[0]["lat"], path[0]["lon"]], zoom_start=12)
+        folium.Marker(
+            [path[0]["lat"], path[0]["lon"]],
+            popup="Start",
+            icon=folium.Icon(color="green")
+        ).add_to(route_map)
+
+        for i, point in enumerate(path[1:], start=1):
+            folium.Marker(
+                [point["lat"], point["lon"]],
+                popup=f"{i}. {point['address']} ({point['distance_km']} km)",
+                icon=folium.Icon(color="blue")
+            ).add_to(route_map)
+            folium.PolyLine([(path[i-1]["lat"], path[i-1]["lon"]), (point["lat"], point["lon"])], color="blue").add_to(route_map)
+
+        st_folium(route_map, width=1000, height=550)
