@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+geopy
+folium
+streamlit-folium
+openpyxl
+fpdf
+ortools
