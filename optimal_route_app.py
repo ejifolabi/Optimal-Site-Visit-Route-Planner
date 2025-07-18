@@ -56,38 +56,44 @@ def nearest_neighbor(dist_matrix, start_idx):
         visited[next_idx] = True
     return order
 
+# --------------------------------------------------------------------------------
+
 def create_pdf_itinerary(addresses, distances_km, times_min):
-    from io import BytesIO
     pdf = FPDF()
-    
-    # Add Unicode font
+    pdf.add_page()
+
+    # Add a Unicode-compatible font (DejaVuSans or fallback)
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     if not os.path.exists(font_path):
-        font_path = "DejaVuSans.ttf"  # fallback if user has the font locally
+        font_path = "DejaVuSans.ttf"
 
-    pdf.add_page()
     pdf.add_font("DejaVu", "", font_path, uni=True)
-    pdf.set_font("DejaVu", size=12)
+    pdf.set_font("DejaVu", "", 12)
 
-    pdf.cell(200, 10, txt="Optimal Visit Itinerary", ln=True, align='C')
+    pdf.cell(200, 10, "Optimal Visit Itinerary", ln=True, align="C")
     pdf.ln(10)
 
-    headers = ["Visit Order", "Address", "Distance (km)", "Duration (min)"]
-    for h in headers:
-        pdf.cell(48, 10, txt=h, border=1)
+    headers = ["Visit", "Address", "Distance (km)", "Duration (min)"]
+    col_widths = [20, 90, 40, 40]
+
+    # Header row
+    for i, h in enumerate(headers):
+        pdf.cell(col_widths[i], 10, h, border=1)
     pdf.ln()
 
+    # Data rows
     for i, (addr, dist, dur) in enumerate(zip(addresses, distances_km, times_min), 1):
-        pdf.cell(48, 10, str(i), border=1)
-        pdf.cell(48, 10, addr[:25], border=1)  # crop long address
-        pdf.cell(48, 10, f"{dist:.2f}", border=1)
-        pdf.cell(48, 10, f"{dur:.2f}", border=1)
+        pdf.cell(col_widths[0], 10, str(i), border=1)
+        pdf.cell(col_widths[1], 10, addr[:50], border=1)
+        pdf.cell(col_widths[2], 10, f"{dist:.2f}", border=1)
+        pdf.cell(col_widths[3], 10, f"{dur:.2f}", border=1)
         pdf.ln()
 
     buffer = BytesIO()
     pdf.output(buffer)
     buffer.seek(0)
     return buffer
+# ---------------------------------------------------------------------------
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
