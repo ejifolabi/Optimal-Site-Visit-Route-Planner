@@ -1,8 +1,6 @@
 streamlit
 pandas
-openrouteservice
+openpyxl
 geopy
-fpdf
 folium
 streamlit-folium
-ortools
