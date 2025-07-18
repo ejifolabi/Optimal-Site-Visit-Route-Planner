@@ -1,136 +1,139 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+from geopy.distance import geodesic
 import folium
 from streamlit_folium import st_folium
-from openrouteservice import Client
-from openrouteservice.distance_matrix import distance_matrix
-from scipy.spatial.distance import cdist
-import numpy as np
-from fpdf import FPDF
+from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 from io import BytesIO
-import itertools
+import base64
+from fpdf import FPDF
 
-# Title
-st.set_page_config(page_title="Optimal Site Visit Route Planner", layout="wide")
+st.set_page_config(page_title="Optimal Site Visit Planner", layout="wide")
+
 st.title("📍 Optimal Site Visit Route Planner")
-st.markdown("This app calculates the optimal route to visit multiple locations based on real road distances using OpenRouteService API.")
+st.markdown("""
+Upload an Excel file with site information (latitude, longitude, address), and this app will:
+- Compute distances between all sites.
+- Find the optimal visit route using Google OR-Tools.
+- Display an interactive map and export itinerary.
+""")
 
-# Load ORS API Key
-API_KEY = st.secrets["ORS_API_KEY"]
-client = Client(key=API_KEY)
+uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
-# Upload Excel file
-uploaded_file = st.file_uploader("Upload an Excel file with latitude, longitude, and address", type=["xlsx"])
-if not uploaded_file:
-    st.info("⬆️ Upload a file to begin")
-    st.stop()
+# ------------------------------
+def create_distance_matrix(locations):
+    n = len(locations)
+    dist_matrix = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                dist_matrix[i][j] = geodesic(locations[i], locations[j]).km
+    return dist_matrix.tolist()
 
-# Read Excel
-try:
-    df = pd.read_excel(uploaded_file)
-    required_cols = {"latitude", "longitude", "address"}
-    if not required_cols.issubset(df.columns):
-        st.error("Excel must contain 'latitude', 'longitude', and 'address' columns.")
-        st.stop()
-except Exception as e:
-    st.error(f"Failed to read file: {e}")
-    st.stop()
+def solve_tsp_ortools(distance_matrix):
+    n = len(distance_matrix)
 
-# Limit number of addresses
-if len(df) > 20:
-    st.warning("Only the first 20 addresses will be used to optimize the route for performance reasons.")
-    df = df.iloc[:20]
+    manager = pywrapcp.RoutingIndexManager(n, 1, 0)
+    routing = pywrapcp.RoutingModel(manager)
 
-coordinates = df[["longitude", "latitude"]].values.tolist()
-addresses = df["address"].tolist()
+    def distance_callback(from_idx, to_idx):
+        return int(distance_matrix[manager.IndexToNode(from_idx)][manager.IndexToNode(to_idx)] * 1000)
 
-# Optional user start location
-user_lat = st.text_input("Enter your starting latitude (optional)")
-user_lon = st.text_input("Enter your starting longitude (optional)")
+    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
 
-if user_lat and user_lon:
-    try:
-        start_point = [float(user_lon), float(user_lat)]
-        coordinates.insert(0, start_point)
-        addresses.insert(0, "Start Location")
-    except:
-        st.warning("Invalid start coordinates. Using first address as start point.")
+    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-@st.cache_data(show_spinner=False)
-def get_distance_matrix(coords):
-    matrix = distance_matrix(
-        client,
-        locations=coords,
-        profile='driving-car',
-        metrics=["distance", "duration"],
-        units="km"
-    )
-    return matrix
+    search_params = pywrapcp.DefaultRoutingSearchParameters()
+    search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
 
-@st.cache_data(show_spinner=False)
-def solve_tsp(distances):
-    n = len(distances)
-    all_indices = list(range(n))
-    min_distance = float("inf")
-    best_order = []
+    solution = routing.SolveWithParameters(search_params)
 
-    for perm in itertools.permutations(all_indices[1:]):
-        current_order = [0] + list(perm)
-        dist = sum(distances[current_order[i]][current_order[i+1]] for i in range(n-1))
-        if dist < min_distance:
-            min_distance = dist
-            best_order = current_order
+    if not solution:
+        return None, None
 
-    return best_order
+    index = routing.Start(0)
+    route = []
+    total_distance = 0
+    while not routing.IsEnd(index):
+        node = manager.IndexToNode(index)
+        route.append(node)
+        previous_index = index
+        index = solution.Value(routing.NextVar(index))
+        total_distance += routing.GetArcCostForVehicle(previous_index, index, 0)
+    route.append(manager.IndexToNode(index))
 
-@st.cache_data(show_spinner=False)
-def create_pdf_itinerary(addresses, distances, durations):
+    return route, total_distance / 1000  # convert back to km
+
+# ------------------------------
+def create_pdf_itinerary(ordered_addresses, total_distance):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="Optimal Route Itinerary", ln=True, align="C")
-    pdf.ln(10)
-    for i, (addr, dist, dur) in enumerate(zip(addresses, distances, durations)):
-        pdf.multi_cell(0, 10, f"{i+1}. {addr}\n   Distance: {dist:.2f} km | Time: {dur:.2f} min")
-        pdf.ln(1)
+    pdf.cell(200, 10, txt="Optimal Visit Itinerary", ln=1, align='C')
+    pdf.ln(5)
+    for i, addr in enumerate(ordered_addresses):
+        pdf.cell(0, 10, txt=f"{i+1}. {addr}", ln=1)
+    pdf.ln(5)
+    pdf.cell(0, 10, txt=f"Total Distance: {total_distance:.2f} km", ln=1)
+    
+    pdf_output = BytesIO()
+    pdf.output(pdf_output)
+    pdf_output.seek(0)
+    return pdf_output
 
-    buffer = BytesIO()
-    pdf.output(buffer)
-    buffer.seek(0)
-    return buffer
+# ------------------------------
+if uploaded_file:
+    df = pd.read_excel(uploaded_file)
+    df.columns = df.columns.str.lower()
+    required_columns = {"latitude", "longitude", "address"}
 
-# Spinner for API and computation
-with st.spinner("Calculating optimal route..."):
-    matrix = get_distance_matrix(coordinates)
-    distance_matrix_km = np.array(matrix['distances'])
-    duration_matrix_min = np.array(matrix['durations'])
+    if not required_columns.issubset(df.columns):
+        st.error("Excel must contain columns: latitude, longitude, address")
+    else:
+        locations = list(zip(df['latitude'], df['longitude']))
+        addresses = df['address'].tolist()
 
-    order = solve_tsp(distance_matrix_km)
-    ordered_coords = [coordinates[i] for i in order]
-    ordered_addresses = [addresses[i] for i in order]
-    ordered_distances_km = [distance_matrix_km[order[i]][order[i+1]] for i in range(len(order)-1)]
-    ordered_times_min = [duration_matrix_min[order[i]][order[i+1]] for i in range(len(order)-1)]
+        st.subheader("📏 Distance Matrix")
+        dist_matrix = create_distance_matrix(locations)
+        dist_df = pd.DataFrame(dist_matrix, columns=addresses, index=addresses)
+        st.dataframe(dist_df.style.format("{:.2f} km"))
 
-# Show ordered itinerary
-st.subheader("🚗 Optimized Visit Order")
-for i, (addr, dist, dur) in enumerate(zip(ordered_addresses[1:], ordered_distances_km, ordered_times_min), start=1):
-    st.markdown(f"**{i}. {addr}**")
-    st.caption(f"Distance: {dist:.2f} km | Estimated time: {dur:.2f} minutes")
+        st.subheader("🧭 Optimal Visit Order (Google OR-Tools)")
+        with st.spinner("Optimizing route..."):
+            order, total_distance = solve_tsp_ortools(dist_matrix)
+            if order is None:
+                st.error("Could not solve TSP. Try fewer locations.")
+            else:
+                ordered_addresses = [addresses[i] for i in order]
+                ordered_coords = [locations[i] for i in order]
 
-# Download itinerary as PDF
-pdf_buffer = create_pdf_itinerary(ordered_addresses, ordered_distances_km, ordered_times_min)
-st.download_button("📄 Download Itinerary as PDF", data=pdf_buffer, file_name="itinerary.pdf")
+                st.success(f"✅ Total Route Distance: {total_distance:.2f} km")
 
-# Display map only after everything
-st.subheader("🗺️ Route Map")
-map_center = ordered_coords[0][::-1]
-map_route = folium.Map(location=map_center, zoom_start=10)
-for i, coord in enumerate(ordered_coords):
-    folium.Marker(
-        location=coord[::-1],
-        popup=f"{i+1}. {ordered_addresses[i]}",
-        icon=folium.Icon(color='blue', icon='info-sign')
-    ).add_to(map_route)
+                st.markdown("### Suggested Visit Order:")
+                for i, addr in enumerate(ordered_addresses):
+                    st.write(f"{i+1}. {addr}")
 
-folium.PolyLine([coord[::-1] for coord in ordered_coords], color="red", weight=2.5).add_to(map_route)
-st_folium(map_route, width=1000, height=500)
+                # Export itinerary
+                export_df = pd.DataFrame({
+                    "Order": list(range(1, len(order)+1)),
+                    "Address": ordered_addresses,
+                    "Latitude": [loc[0] for loc in ordered_coords],
+                    "Longitude": [loc[1] for loc in ordered_coords]
+                })
+
+                csv = export_df.to_csv(index=False).encode()
+                st.download_button("📥 Download CSV Itinerary", csv, file_name="visit_order.csv", mime="text/csv")
+
+                pdf = create_pdf_itinerary(ordered_addresses, total_distance)
+                st.download_button("📄 Download PDF Itinerary", pdf, file_name="visit_order.pdf")
+
+                # Map
+                st.subheader("🗺️ Route Map")
+                map = folium.Map(location=locations[0], zoom_start=11)
+                for i, idx in enumerate(order):
+                    folium.Marker(location=locations[idx], popup=f"{i+1}. {addresses[idx]}",
+                                  icon=folium.Icon(color="blue")).add_to(map)
+
+                folium.PolyLine(locations=ordered_coords, color="red", weight=3, opacity=0.8).add_to(map)
+                st_folium(map, width=900)
