@@ -4,6 +4,7 @@ import numpy as np
 import openrouteservice
 from openrouteservice import distance_matrix
 from io import BytesIO
+import os
 from fpdf import FPDF
 import math
 import base64
@@ -56,20 +57,33 @@ def nearest_neighbor(dist_matrix, start_idx):
     return order
 
 def create_pdf_itinerary(addresses, distances_km, times_min):
+    from io import BytesIO
     pdf = FPDF()
+    
+    # Add Unicode font
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    if not os.path.exists(font_path):
+        font_path = "DejaVuSans.ttf"  # fallback if user has the font locally
+
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="📍 Optimal Site Visit Itinerary", ln=1, align="C")
-    pdf.ln(5)
-    total_distance = 0
-    total_time = 0
-    for i, (addr, dist, dur) in enumerate(zip(addresses, distances_km, times_min)):
-        pdf.multi_cell(0, 10, txt=f"{i+1}. {addr}\nDistance from last stop: {dist:.2f} km | Time: {dur:.1f} mins")
-        total_distance += dist
-        total_time += dur
+    pdf.add_font("DejaVu", "", font_path, uni=True)
+    pdf.set_font("DejaVu", size=12)
+
+    pdf.cell(200, 10, txt="Optimal Visit Itinerary", ln=True, align='C')
     pdf.ln(10)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(200, 10, txt=f"Total Distance: {total_distance:.2f} km | Total Time: {total_time:.1f} mins", ln=1)
+
+    headers = ["Visit Order", "Address", "Distance (km)", "Duration (min)"]
+    for h in headers:
+        pdf.cell(48, 10, txt=h, border=1)
+    pdf.ln()
+
+    for i, (addr, dist, dur) in enumerate(zip(addresses, distances_km, times_min), 1):
+        pdf.cell(48, 10, str(i), border=1)
+        pdf.cell(48, 10, addr[:25], border=1)  # crop long address
+        pdf.cell(48, 10, f"{dist:.2f}", border=1)
+        pdf.cell(48, 10, f"{dur:.2f}", border=1)
+        pdf.ln()
+
     buffer = BytesIO()
     pdf.output(buffer)
     buffer.seek(0)
