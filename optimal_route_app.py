@@ -6,7 +6,6 @@ import folium
 from streamlit_folium import st_folium
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 from io import BytesIO
-import base64
 from fpdf import FPDF
 
 st.set_page_config(page_title="Optimal Site Visit Planner", layout="wide")
@@ -15,6 +14,7 @@ st.title("📍 Optimal Site Visit Route Planner")
 st.markdown("""
 Upload an Excel file with site information (latitude, longitude, address), and this app will:
 - Compute distances between all sites.
+- Allow you to start the visit from your current location (optional).
 - Find the optimal visit route using Google OR-Tools.
 - Display an interactive map and export itinerary.
 """)
@@ -76,7 +76,7 @@ def create_pdf_itinerary(ordered_addresses, total_distance):
         pdf.cell(0, 10, txt=f"{i+1}. {addr}", ln=1)
     pdf.ln(5)
     pdf.cell(0, 10, txt=f"Total Distance: {total_distance:.2f} km", ln=1)
-    
+
     pdf_output = BytesIO()
     pdf.output(pdf_output)
     pdf_output.seek(0)
@@ -91,8 +91,16 @@ if uploaded_file:
     if not required_columns.issubset(df.columns):
         st.error("Excel must contain columns: latitude, longitude, address")
     else:
+        st.subheader("📍 Optional: Your Current Location")
+        user_lat = st.number_input("Your Latitude (optional)", value=None, step=0.0001, format="%.6f")
+        user_lon = st.number_input("Your Longitude (optional)", value=None, step=0.0001, format="%.6f")
+
         locations = list(zip(df['latitude'], df['longitude']))
         addresses = df['address'].tolist()
+
+        if user_lat is not None and user_lon is not None:
+            locations = [(user_lat, user_lon)] + locations
+            addresses = ["Your Location"] + addresses
 
         st.subheader("📏 Distance Matrix")
         dist_matrix = create_distance_matrix(locations)
@@ -114,7 +122,6 @@ if uploaded_file:
                 for i, addr in enumerate(ordered_addresses):
                     st.write(f"{i+1}. {addr}")
 
-                # Export itinerary
                 export_df = pd.DataFrame({
                     "Order": list(range(1, len(order)+1)),
                     "Address": ordered_addresses,
@@ -128,7 +135,6 @@ if uploaded_file:
                 pdf = create_pdf_itinerary(ordered_addresses, total_distance)
                 st.download_button("📄 Download PDF Itinerary", pdf, file_name="visit_order.pdf")
 
-                # Map
                 st.subheader("🗺️ Route Map")
                 map = folium.Map(location=locations[0], zoom_start=11)
                 for i, idx in enumerate(order):
