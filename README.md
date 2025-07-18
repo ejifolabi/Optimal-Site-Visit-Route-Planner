@@ -12,7 +12,7 @@ This Streamlit web app helps you **plan the most efficient route** when visiting
 
 ## 🚀 Live App
 
-👉 [Launch the App](#) &nbsp; *(Replace with your Streamlit Cloud link)*
+👉 [Launch the App](#)
 
 ---
 
