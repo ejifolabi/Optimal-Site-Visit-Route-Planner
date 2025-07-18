@@ -42,7 +42,7 @@ if len(df) > MAX_LOCATIONS:
 def get_sorted_by_distance(start_coords, df):
     results = []
     for _, row in df.iterrows():
-        coord = (row["lon"], row["lat"])
+        coord = (row["Longitude"], row["Latitude"])
         if coord == start_coords:
             continue
         try:
