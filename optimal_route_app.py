@@ -78,7 +78,7 @@ def create_pdf(data):
 
     pdf.set_font("Arial", "", 12)
     for i, row in data.iterrows():
-        pdf.cell(0, 10, f"{i + 1}. {row['add']} - {row['Distance (km)']} km", ln=True)
+        pdf.cell(0, 10, f"{i + 1}. {row['Address']} - {row['Distance (km)']} km", ln=True)
 
     buffer = BytesIO()
     pdf_output = pdf.output(dest='S').encode('latin1')
