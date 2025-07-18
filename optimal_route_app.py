@@ -1,97 +1,136 @@
 import streamlit as st
 import pandas as pd
 import folium
-from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
-import openrouteservice
-from openrouteservice import convert
-import io
+from openrouteservice import Client
+from openrouteservice.distance_matrix import distance_matrix
+from scipy.spatial.distance import cdist
+import numpy as np
 from fpdf import FPDF
-import polyline
+from io import BytesIO
+import itertools
 
-st.set_page_config(page_title="Optimal Site Visit Planner", layout="wide")
+# Title
+st.set_page_config(page_title="Optimal Site Visit Route Planner", layout="wide")
 st.title("📍 Optimal Site Visit Route Planner")
+st.markdown("This app calculates the optimal route to visit multiple locations based on real road distances using OpenRouteService API.")
 
-# --- Input Section ---
-st.markdown("Upload an Excel file with columns: Address, Latitude, Longitude")
-uploaded_file = st.file_uploader("Choose an Excel file", type=[".xlsx"])
-
-# --- ORS API Key ---
+# Load ORS API Key
 API_KEY = st.secrets["ORS_API_KEY"]
-client = openrouteservice.Client(key=API_KEY)
+client = Client(key=API_KEY)
 
-# --- Helper to Generate PDF ---
-def create_pdf_itinerary(addresses, distances_km, durations_min):
+# Upload Excel file
+uploaded_file = st.file_uploader("Upload an Excel file with latitude, longitude, and address", type=["xlsx"])
+if not uploaded_file:
+    st.info("⬆️ Upload a file to begin")
+    st.stop()
+
+# Read Excel
+try:
+    df = pd.read_excel(uploaded_file)
+    required_cols = {"latitude", "longitude", "address"}
+    if not required_cols.issubset(df.columns):
+        st.error("Excel must contain 'latitude', 'longitude', and 'address' columns.")
+        st.stop()
+except Exception as e:
+    st.error(f"Failed to read file: {e}")
+    st.stop()
+
+# Limit number of addresses
+if len(df) > 20:
+    st.warning("Only the first 20 addresses will be used to optimize the route for performance reasons.")
+    df = df.iloc[:20]
+
+coordinates = df[["longitude", "latitude"]].values.tolist()
+addresses = df["address"].tolist()
+
+# Optional user start location
+user_lat = st.text_input("Enter your starting latitude (optional)")
+user_lon = st.text_input("Enter your starting longitude (optional)")
+
+if user_lat and user_lon:
+    try:
+        start_point = [float(user_lon), float(user_lat)]
+        coordinates.insert(0, start_point)
+        addresses.insert(0, "Start Location")
+    except:
+        st.warning("Invalid start coordinates. Using first address as start point.")
+
+@st.cache_data(show_spinner=False)
+def get_distance_matrix(coords):
+    matrix = distance_matrix(
+        client,
+        locations=coords,
+        profile='driving-car',
+        metrics=["distance", "duration"],
+        units="km"
+    )
+    return matrix
+
+@st.cache_data(show_spinner=False)
+def solve_tsp(distances):
+    n = len(distances)
+    all_indices = list(range(n))
+    min_distance = float("inf")
+    best_order = []
+
+    for perm in itertools.permutations(all_indices[1:]):
+        current_order = [0] + list(perm)
+        dist = sum(distances[current_order[i]][current_order[i+1]] for i in range(n-1))
+        if dist < min_distance:
+            min_distance = dist
+            best_order = current_order
+
+    return best_order
+
+@st.cache_data(show_spinner=False)
+def create_pdf_itinerary(addresses, distances, durations):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="Optimal Visit Itinerary", ln=1, align="C")
+    pdf.cell(200, 10, txt="Optimal Route Itinerary", ln=True, align="C")
+    pdf.ln(10)
+    for i, (addr, dist, dur) in enumerate(zip(addresses, distances, durations)):
+        pdf.multi_cell(0, 10, f"{i+1}. {addr}\n   Distance: {dist:.2f} km | Time: {dur:.2f} min")
+        pdf.ln(1)
 
-    for i, (addr, dist, dur) in enumerate(zip(addresses, distances_km, durations_min)):
-        pdf.cell(200, 10, txt=f"{i+1}. {addr}", ln=1)
-        pdf.cell(200, 10, txt=f"   Distance: {dist:.2f} km | Duration: {dur:.1f} min", ln=1)
-
-    buffer = io.BytesIO()
+    buffer = BytesIO()
     pdf.output(buffer)
     buffer.seek(0)
     return buffer
 
-# --- Optimization Section ---
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
+# Spinner for API and computation
+with st.spinner("Calculating optimal route..."):
+    matrix = get_distance_matrix(coordinates)
+    distance_matrix_km = np.array(matrix['distances'])
+    duration_matrix_min = np.array(matrix['durations'])
 
-    if not {'Latitude', 'Longitude', 'Address'}.issubset(df.columns):
-        st.error("The Excel file must contain 'Address', 'Latitude', and 'Longitude' columns.")
-    else:
-        locations = df[['Longitude', 'Latitude']].values.tolist()
-        addresses = df['Address'].tolist()
+    order = solve_tsp(distance_matrix_km)
+    ordered_coords = [coordinates[i] for i in order]
+    ordered_addresses = [addresses[i] for i in order]
+    ordered_distances_km = [distance_matrix_km[order[i]][order[i+1]] for i in range(len(order)-1)]
+    ordered_times_min = [duration_matrix_min[order[i]][order[i+1]] for i in range(len(order)-1)]
 
-        # --- ORS Optimization API ---
-        jobs = [
-            {"id": i+1, "location": coord} for i, coord in enumerate(locations[1:])
-        ]
+# Show ordered itinerary
+st.subheader("🚗 Optimized Visit Order")
+for i, (addr, dist, dur) in enumerate(zip(ordered_addresses[1:], ordered_distances_km, ordered_times_min), start=1):
+    st.markdown(f"**{i}. {addr}**")
+    st.caption(f"Distance: {dist:.2f} km | Estimated time: {dur:.2f} minutes")
 
-        vehicle = {
-            "id": 1,
-            "start": locations[0],
-            "end": locations[0],
-        }
+# Download itinerary as PDF
+pdf_buffer = create_pdf_itinerary(ordered_addresses, ordered_distances_km, ordered_times_min)
+st.download_button("📄 Download Itinerary as PDF", data=pdf_buffer, file_name="itinerary.pdf")
 
-        try:
-            res = client.optimization(jobs=jobs, vehicles=[vehicle])
-            route = res['routes'][0]['steps']
-            ordered_indices = [0] + [step['job'] for step in route if 'job' in step]
-            ordered_coords = [locations[0]] + [locations[i] for i in [j-1 for j in ordered_indices[1:]]]
-            ordered_addresses = [addresses[0]] + [addresses[i] for i in [j-1 for j in ordered_indices[1:]]]
+# Display map only after everything
+st.subheader("🗺️ Route Map")
+map_center = ordered_coords[0][::-1]
+map_route = folium.Map(location=map_center, zoom_start=10)
+for i, coord in enumerate(ordered_coords):
+    folium.Marker(
+        location=coord[::-1],
+        popup=f"{i+1}. {ordered_addresses[i]}",
+        icon=folium.Icon(color='blue', icon='info-sign')
+    ).add_to(map_route)
 
-            # --- Get actual directions between ordered waypoints ---
-            directions = client.directions(ordered_coords, profile='driving-car', format='geojson')
-            segments = directions['features'][0]['properties']['segments']
-
-            ordered_distances_km = [seg['distance']/1000 for seg in segments]
-            ordered_times_min = [seg['duration']/60 for seg in segments]
-
-            st.success("✅ Optimal Route Computed Successfully!")
-            st.subheader("📋 Visit Order")
-
-            for i, (addr, dist, dur) in enumerate(zip(ordered_addresses, ordered_distances_km, ordered_times_min)):
-                st.markdown(f"**{i+1}. {addr}**  ")
-                st.markdown(f"Distance: {dist:.2f} km | Duration: {dur:.1f} min")
-
-            # --- Download Itinerary as PDF ---
-            pdf_buffer = create_pdf_itinerary(ordered_addresses, ordered_distances_km, ordered_times_min)
-            st.download_button("📄 Download Itinerary as PDF", data=pdf_buffer, file_name="itinerary.pdf")
-
-            # --- Map Section (Last) ---
-            st.subheader("🗺️ Route Map")
-            m = folium.Map(location=locations[0][::-1], zoom_start=12)
-            MarkerCluster().add_to(m)
-
-            for idx, coord in enumerate(ordered_coords):
-                folium.Marker(coord[::-1], tooltip=f"{idx+1}. {ordered_addresses[idx]}").add_to(m)
-
-            folium.PolyLine(locations=[coord[::-1] for coord in ordered_coords], color="blue", weight=5).add_to(m)
-            st_folium(m, width=1000, height=600)
-
-        except Exception as e:
-            st.error(f"❌ Failed to compute optimal route: {e}")
+folium.PolyLine([coord[::-1] for coord in ordered_coords], color="red", weight=2.5).add_to(map_route)
+st_folium(map_route, width=1000, height=500)
