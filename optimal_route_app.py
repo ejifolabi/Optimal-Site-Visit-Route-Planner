@@ -12,7 +12,6 @@ st.markdown("Upload an Excel file containing site coordinates: **Latitude, Longi
 
 # Upload Excel file
 uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-
 start_lat = st.text_input("Optional Start Latitude", placeholder="e.g. 6.5244")
 start_lon = st.text_input("Optional Start Longitude", placeholder="e.g. 3.3792")
 
@@ -21,7 +20,7 @@ def read_data(file):
     df = pd.read_excel(file)
     col_map = {col.lower(): col for col in df.columns}
     required = ['latitude', 'longitude', 'address']
-
+    
     if not all(col in col_map for col in required):
         st.error(f"Your Excel must contain columns: {required}")
         return None
@@ -31,9 +30,6 @@ def read_data(file):
         col_map['longitude']: 'lon',
         col_map['address']: 'address'
     }, inplace=True)
-
-    # Drop rows with missing coordinates
-    df.dropna(subset=['lat', 'lon'], inplace=True)
 
     return df[['lat', 'lon', 'address']]
 
@@ -45,22 +41,12 @@ def compute_closest_path(df, user_start=None):
 
     if user_start:
         current_point = user_start
-        path.append({
-            "address": "User Start",
-            "lat": current_point[0],
-            "lon": current_point[1],
-            "distance_km": 0
-        })
+        path.append({"address": "User Start", "lat": current_point[0], "lon": current_point[1], "distance_km": 0})
     else:
         first = df.iloc[0]
         current_point = (first['lat'], first['lon'])
         visited.append(0)
-        path.append({
-            "address": first['address'],
-            "lat": first['lat'],
-            "lon": first['lon'],
-            "distance_km": 0
-        })
+        path.append({"address": first['address'], "lat": first['lat'], "lon": first['lon'], "distance_km": 0})
 
     while len(visited) < len(df):
         min_dist = float('inf')
@@ -88,15 +74,15 @@ def compute_closest_path(df, user_start=None):
 
 if uploaded_file:
     df = read_data(uploaded_file)
-    if df is not None and not df.empty:
-        st.success(f"{len(df)} locations loaded successfully.")
+    if df is not None:
+        st.success(f"{len(df)} locations loaded.")
 
         # Validate user input for optional start
         if start_lat and start_lon:
             try:
                 user_start_coords = (float(start_lat), float(start_lon))
             except:
-                st.warning("Invalid coordinates provided. Starting from the first location.")
+                st.warning("Invalid coordinates provided. Starting from first location.")
                 user_start_coords = None
         else:
             user_start_coords = None
@@ -108,44 +94,23 @@ if uploaded_file:
         path_df = pd.DataFrame(path)
         st.dataframe(path_df[["address", "distance_km"]].rename(columns={"distance_km": "Distance (km)"}))
 
-        st.success(f"✅ Total estimated travel distance: **{total_distance} km**")
+        st.success(f"Total estimated travel distance: {total_distance} km")
 
-        # Debugging coordinates
-        st.write("### Debug: Coordinates Used")
-        for point in path:
-            st.write(f"{point['address']}: ({point['lat']}, {point['lon']})")
-
-        # Show route on map
+        # Show on map
         st.subheader("🗺️ Route Map")
-        try:
-            route_map = folium.Map(location=[path[0]["lat"], path[0]["lon"]], zoom_start=12)
+        route_map = folium.Map(location=[path[0]["lat"], path[0]["lon"]], zoom_start=12)
+        folium.Marker(
+            [path[0]["lat"], path[0]["lon"]],
+            popup="Start",
+            icon=folium.Icon(color="green")
+        ).add_to(route_map)
 
-            # Start marker
+        for i, point in enumerate(path[1:], start=1):
             folium.Marker(
-                [path[0]["lat"], path[0]["lon"]],
-                popup="Start",
-                icon=folium.Icon(color="green")
+                [point["lat"], point["lon"]],
+                popup=f"{i}. {point['address']} ({point['distance_km']} km)",
+                icon=folium.Icon(color="blue")
             ).add_to(route_map)
+            folium.PolyLine([(path[i-1]["lat"], path[i-1]["lon"]), (point["lat"], point["lon"])], color="blue").add_to(route_map)
 
-            # Route markers and lines
-            for i, point in enumerate(path[1:], start=1):
-                folium.Marker(
-                    [point["lat"], point["lon"]],
-                    popup=f"{i}. {point['address']} ({point['distance_km']} km)",
-                    icon=folium.Icon(color="blue")
-                ).add_to(route_map)
-
-                folium.PolyLine(
-                    [(path[i - 1]["lat"], path[i - 1]["lon"]),
-                     (point["lat"], point["lon"])],
-                    color="blue"
-                ).add_to(route_map)
-
-            st_folium(route_map, width=1000, height=550)
-
-        except Exception as e:
-            st.error("An error occurred while displaying the map.")
-            st.exception(e)
-
-    else:
-        st.error("Failed to load data from the uploaded file.")
+        st_folium(route_map, width=1000, height=550)
