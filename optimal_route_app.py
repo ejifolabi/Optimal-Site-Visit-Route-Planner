@@ -1,111 +1,149 @@
 import streamlit as st
 import pandas as pd
-import openrouteservice
-from geopy.distance import geodesic
-from streamlit_folium import st_folium
 import folium
+from streamlit_folium import st_folium
+from geopy.distance import geodesic
+import pdfkit
+from jinja2 import Template
+import base64
+import os
 
-# --- Streamlit Config ---
-st.set_page_config(page_title="Optimal Site Visit Route", layout="wide")
+st.set_page_config(page_title="📍 Optimal Site Visit Route Planner", layout="wide")
 st.title("📍 Optimal Site Visit Route Planner")
-st.markdown("Upload an Excel file with **Latitude**, **Longitude**, and **Address** columns (case-insensitive).")
+st.markdown("Upload an Excel file containing site coordinates with columns: **Latitude, Longitude, Address** (not case-sensitive).")
 
-# --- ORS API Client ---
-@st.cache_resource
-def get_ors_client():
-    return openrouteservice.Client(key=st.secrets["ORS_API_KEY"])
-
-client = get_ors_client()
-
-# --- Helper: Normalize Column Names ---
-def normalize_columns(df):
-    df.columns = [col.lower().strip() for col in df.columns]
-    required = {"latitude", "longitude", "address"}
+@st.cache_data
+def read_excel(file):
+    df = pd.read_excel(file)
+    df.columns = df.columns.str.strip().str.lower()
+    required = {'latitude', 'longitude', 'address'}
     if not required.issubset(set(df.columns)):
-        st.error("Excel must contain columns: Latitude, Longitude, Address")
-        st.stop()
-    return df.rename(columns={"latitude": "Latitude", "longitude": "Longitude", "address": "Address"})
+        st.error(f"Your Excel must contain: {required}")
+        return None
+    df = df.rename(columns={'latitude': 'Latitude', 'longitude': 'Longitude', 'address': 'Address'})
+    return df[['Latitude', 'Longitude', 'Address']]
 
-# --- Helper: Get Road Distance ---
-@st.cache_data(show_spinner=False)
-def get_road_distance(client, coord1, coord2):
-    try:
-        route = client.directions(coordinates=[coord1, coord2], profile='driving-car', format='geojson')
-        meters = route['features'][0]['properties']['segments'][0]['distance']
-        return meters / 1000  # in KM
-    except Exception:
-        return float('inf')
+def compute_distance(p1, p2):
+    return round(geodesic(p1, p2).km, 2)
 
-# --- Get Closest Location Chain ---
-def get_closest_chain(df, start_coords):
-    visited = []
-    unvisited = df.copy()
-    current_coords = start_coords
-    total_km = 0
-
+def nearest_neighbor_route(start_point, sites):
+    unvisited = sites.copy()
+    route = []
+    current = start_point
+    total_distance = 0
     while not unvisited.empty:
-        distances = unvisited.apply(
-            lambda row: get_road_distance(client, (current_coords[1], current_coords[0]), (row["Longitude"], row["Latitude"])),
-            axis=1
-        )
-        min_idx = distances.idxmin()
-        min_row = unvisited.loc[min_idx]
-        min_dist = distances[min_idx]
-        total_km += min_dist
-        visited.append({
-            "Address": min_row["Address"],
-            "Latitude": min_row["Latitude"],
-            "Longitude": min_row["Longitude"],
-            "Distance_from_last": round(min_dist, 2)
+        unvisited["Distance"] = unvisited.apply(lambda row: compute_distance(current, (row["Latitude"], row["Longitude"])), axis=1)
+        next_idx = unvisited["Distance"].idxmin()
+        next_site = unvisited.loc[next_idx]
+        distance = unvisited.loc[next_idx, "Distance"]
+        total_distance += distance
+        route.append({
+            "Address": next_site["Address"],
+            "Latitude": next_site["Latitude"],
+            "Longitude": next_site["Longitude"],
+            "Distance_from_last": distance
         })
-        current_coords = (min_row["Latitude"], min_row["Longitude"])
-        unvisited = unvisited.drop(min_idx)
+        current = (next_site["Latitude"], next_site["Longitude"])
+        unvisited = unvisited.drop(next_idx)
+    return route, round(total_distance, 2)
 
-    return visited, round(total_km, 2)
+# --- User Location ---
+with st.expander("📌 Optional: Enter Your Current Location"):
+    col1, col2 = st.columns(2)
+    user_lat = col1.text_input("Latitude")
+    user_lon = col2.text_input("Longitude")
 
-# --- Upload Excel ---
-uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    df = normalize_columns(df)
+uploaded = st.file_uploader("Upload Excel file", type=["xlsx"])
 
-    with st.expander("Optional: Enter Starting Location"):
-        col1, col2 = st.columns(2)
-        with col1:
-            user_lat = st.number_input("Your Latitude (optional)", format="%.6f")
-        with col2:
-            user_lon = st.number_input("Your Longitude (optional)", format="%.6f")
+if uploaded:
+    df = read_excel(uploaded)
+    if df is not None:
+        if user_lat and user_lon:
+            try:
+                start_point = (float(user_lat), float(user_lon))
+            except:
+                st.error("Invalid coordinates.")
+                st.stop()
+        else:
+            start_point = (df["Latitude"].iloc[0], df["Longitude"].iloc[0])
 
-    if st.button("🧭 Plan Route"):
-        if "route" not in st.session_state:
-            if user_lat and user_lon:
-                start_coords = (user_lat, user_lon)
-            else:
-                first_row = df.iloc[0]
-                start_coords = (first_row["Latitude"], first_row["Longitude"])
+        route, total_km = nearest_neighbor_route(start_point, df)
+        st.session_state['route'] = route
+        st.session_state['total_km'] = total_km
 
-            with st.spinner("Calculating optimal route..."):
-                route, total_distance = get_closest_chain(df, start_coords)
-                st.session_state["route"] = route
-                st.session_state["total_km"] = total_distance
+        st.success(f"✅ Route planned! Total travel distance: {total_km} km")
+        st.subheader("📋 Sorted Route List")
+        st.dataframe(pd.DataFrame(route))
 
-    if "route" in st.session_state:
-        st.success(f"🛣️ Route ready! Total travel distance: **{st.session_state['total_km']} km**")
+        # --- Map ---
+        st.subheader("🗺️ Route Map")
+        map_style = st.selectbox("Choose map style", ["CartoDB.Positron", "CartoDB.DarkMatter", "Stamen.TonerLite", "OpenStreetMap"])
+        m = folium.Map(location=[start_point[0], start_point[1]], zoom_start=12, tiles=map_style)
 
-        # Show Table
-        result_df = pd.DataFrame(st.session_state["route"])
-        result_df.index += 1
-        st.subheader("📍 Visit Order by Closest Road Distance")
-        st.dataframe(result_df)
+        folium.Marker(location=start_point, tooltip="Start (You)", icon=folium.Icon(color='green')).add_to(m)
 
-        # Map Display
-        m = folium.Map(location=[result_df["Latitude"].iloc[0], result_df["Longitude"].iloc[0]], zoom_start=12, tiles="cartodbpositron")
-        for idx, row in result_df.iterrows():
+        for idx, row in enumerate(route):
             folium.Marker(
                 location=[row["Latitude"], row["Longitude"]],
-                popup=f"{idx}. {row['Address']}\n({row['Distance_from_last']} km)",
-                icon=folium.Icon(color="blue", icon="map-marker")
+                tooltip=f"{idx + 1}. {row['Address']}",
+                icon=folium.Icon(color="blue", icon="info-sign")
             ).add_to(m)
 
-        st.subheader("🗺️ Route Map")
-        st_folium(m, width=1200, height=600)
+            if idx == 0:
+                folium.PolyLine([start_point, (row["Latitude"], row["Longitude"])], color="red").add_to(m)
+            else:
+                folium.PolyLine([
+                    (route[idx - 1]["Latitude"], route[idx - 1]["Longitude"]),
+                    (row["Latitude"], row["Longitude"])
+                ], color="red").add_to(m)
+
+        st_folium(m, width=1100, height=500)
+
+        # --- PDF Export ---
+        def generate_pdf(route_data):
+            template = Template("""
+            <html>
+            <head><meta charset="utf-8">
+            <style>
+                body { font-family: Arial; }
+                h2 { color: #2F80ED; }
+                table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+                th, td { border: 1px solid #ddd; padding: 8px; }
+                th { background-color: #f2f2f2; }
+            </style>
+            </head>
+            <body>
+                <h2>Optimal Site Visit Route</h2>
+                <p>Total Distance: <strong>{{ total }} km</strong></p>
+                <table>
+                    <tr>
+                        <th>Order</th>
+                        <th>Address</th>
+                        <th>Latitude</th>
+                        <th>Longitude</th>
+                        <th>Distance from Last (km)</th>
+                    </tr>
+                    {% for i, row in data %}
+                    <tr>
+                        <td>{{ i + 1 }}</td>
+                        <td>{{ row['Address'] }}</td>
+                        <td>{{ row['Latitude'] }}</td>
+                        <td>{{ row['Longitude'] }}</td>
+                        <td>{{ row['Distance_from_last'] }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </body>
+            </html>
+            """)
+            html = template.render(data=enumerate(route_data), total=total_km)
+            pdf_path = "/tmp/route_report.pdf"
+            pdfkit.from_string(html, pdf_path)
+            return pdf_path
+
+        if st.button("⬇️ Download Route Plan as PDF"):
+            pdf_file = generate_pdf(route)
+            with open(pdf_file, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+                href = f'<a href="data:application/pdf;base64,{b64}" download="route_plan.pdf">📥 Click to download PDF</a>'
+                st.markdown(href, unsafe_allow_html=True)
