@@ -4,3 +4,4 @@ openrouteservice
 geopy
 folium
 streamlit-folium
+xhtml2pdf
