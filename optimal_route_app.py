@@ -1,116 +1,106 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+from geopy.distance import geodesic
 import folium
 from streamlit_folium import st_folium
-from geopy.distance import geodesic
+import openrouteservice
+from openrouteservice import convert
 
-st.set_page_config(page_title="Smart Site Visit Route", layout="wide")
+st.set_page_config(page_title="📍 Smart Site Visit Route", layout="wide")
 
 st.title("📍 Smart Site Visit Route Planner")
 st.markdown("Upload an Excel file containing site coordinates: **Latitude, Longitude, Address** (case-insensitive).")
 
-# Upload Excel file
-uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-start_lat = st.text_input("Optional Start Latitude", placeholder="e.g. 6.5244")
-start_lon = st.text_input("Optional Start Longitude", placeholder="e.g. 3.3792")
+# --- Caching client creation
+@st.cache_resource
+def get_ors_client():
+    return openrouteservice.Client(key=st.secrets["ORS_API_KEY"])
 
-@st.cache_data
-def read_data(file):
-    df = pd.read_excel(file)
-    col_map = {col.lower(): col for col in df.columns}
-    required = ['latitude', 'longitude', 'address']
-    
-    if not all(col in col_map for col in required):
-        st.error(f"Your Excel must contain columns: {required}")
-        return None
+# --- Optional: Get user's location
+with st.expander("🔍 Optional: Enter Your Current Location (Latitude, Longitude)"):
+    user_lat = st.number_input("Your Latitude", format="%.6f")
+    user_lon = st.number_input("Your Longitude", format="%.6f")
+    use_user_location = st.checkbox("Use as starting point")
 
-    df.rename(columns={
-        col_map['latitude']: 'lat',
-        col_map['longitude']: 'lon',
-        col_map['address']: 'address'
-    }, inplace=True)
+# --- Upload section
+uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
-    return df[['lat', 'lon', 'address']]
-
-@st.cache_data
-def compute_closest_path(df, user_start=None):
-    visited = []
-    path = []
-    total_distance = 0.0
-
-    if user_start:
-        current_point = user_start
-        path.append({"address": "User Start", "lat": current_point[0], "lon": current_point[1], "distance_km": 0})
-    else:
-        first = df.iloc[0]
-        current_point = (first['lat'], first['lon'])
-        visited.append(0)
-        path.append({"address": first['address'], "lat": first['lat'], "lon": first['lon'], "distance_km": 0})
-
-    while len(visited) < len(df):
-        min_dist = float('inf')
-        next_index = -1
-        for i, row in df.iterrows():
-            if i in visited:
-                continue
-            dist = geodesic(current_point, (row['lat'], row['lon'])).km
-            if dist < min_dist:
-                min_dist = dist
-                next_index = i
-
-        visited.append(next_index)
-        next_site = df.iloc[next_index]
-        current_point = (next_site['lat'], next_site['lon'])
-        total_distance += min_dist
-        path.append({
-            "address": next_site['address'],
-            "lat": next_site['lat'],
-            "lon": next_site['lon'],
-            "distance_km": round(min_dist, 2)
-        })
-
-    return path, round(total_distance, 2)
-
+# --- Start processing
 if uploaded_file:
-    df = read_data(uploaded_file)
-    if df is not None:
-        st.success(f"{len(df)} locations loaded.")
+    df = pd.read_excel(uploaded_file)
 
-        # Validate user input for optional start
-        if start_lat and start_lon:
-            try:
-                user_start_coords = (float(start_lat), float(start_lon))
-            except:
-                st.warning("Invalid coordinates provided. Starting from first location.")
-                user_start_coords = None
-        else:
-            user_start_coords = None
+    # Normalize columns
+    df.columns = df.columns.str.lower()
+    required_cols = {"latitude", "longitude", "address"}
+    if not required_cols.issubset(set(df.columns)):
+        st.error(f"Your Excel must contain: {required_cols}")
+        st.stop()
 
-        with st.spinner("Calculating optimized route..."):
-            path, total_distance = compute_closest_path(df, user_start=user_start_coords)
+    df = df.rename(columns={
+        "latitude": "lat",
+        "longitude": "lon",
+        "address": "address"
+    })
 
-        st.subheader("📍 Visit Order by Closest Proximity")
-        path_df = pd.DataFrame(path)
-        st.dataframe(path_df[["address", "distance_km"]].rename(columns={"distance_km": "Distance (km)"}))
+    # --- Starting point
+    if use_user_location:
+        start_coords = (user_lat, user_lon)
+    else:
+        start_coords = (df.iloc[0]["lat"], df.iloc[0]["lon"])
 
-        st.success(f"Total estimated travel distance: {total_distance} km")
+    # --- Calculate distance from starting point
+    @st.cache_data
+    def sort_by_proximity(df, start_coords):
+        df["distance_from_start_km"] = df.apply(
+            lambda row: geodesic(start_coords, (row["lat"], row["lon"])).km, axis=1)
+        return df.sort_values("distance_from_start_km").reset_index(drop=True)
 
-        # Show on map
-        st.subheader("🗺️ Route Map")
-        route_map = folium.Map(location=[path[0]["lat"], path[0]["lon"]], zoom_start=12)
+    sorted_df = sort_by_proximity(df, start_coords)
+
+    # --- Display sorted addresses and distances
+    st.subheader("📄 Locations Sorted by Proximity")
+    st.dataframe(sorted_df[["address", "lat", "lon", "distance_from_start_km"]].round(3))
+
+    # --- Compute route using ORS
+    with st.spinner("Calculating route using OpenRouteService..."):
+        coords = [[row["lon"], row["lat"]] for _, row in sorted_df.iterrows()]
+        if use_user_location:
+            coords.insert(0, [user_lon, user_lat])
+
+        client = get_ors_client()
+        try:
+            route = client.directions(
+                coordinates=coords,
+                profile='driving-car',
+                format='geojson'
+            )
+        except Exception as e:
+            st.error("🚨 ORS API Error: " + str(e))
+            st.stop()
+
+    # --- Compute total distance
+    total_distance_km = sum(geodesic(
+        (coords[i][1], coords[i][0]), (coords[i+1][1], coords[i+1][0])
+    ).km for i in range(len(coords)-1))
+
+    st.success(f"✅ Total Route Distance: **{total_distance_km:.2f} km**")
+
+    # --- Map section
+    st.subheader("🗺️ Route Map")
+    center_lat = sum([c[1] for c in coords]) / len(coords)
+    center_lon = sum([c[0] for c in coords]) / len(coords)
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
+
+    # Plot route
+    folium.GeoJson(route, name="Route").add_to(m)
+
+    # Markers
+    for i, point in enumerate(coords):
+        label = "Start" if i == 0 else f"Stop {i}"
         folium.Marker(
-            [path[0]["lat"], path[0]["lon"]],
-            popup="Start",
-            icon=folium.Icon(color="green")
-        ).add_to(route_map)
+            location=[point[1], point[0]],
+            popup=label,
+            icon=folium.Icon(color="green" if i == 0 else "blue", icon="flag")
+        ).add_to(m)
 
-        for i, point in enumerate(path[1:], start=1):
-            folium.Marker(
-                [point["lat"], point["lon"]],
-                popup=f"{i}. {point['address']} ({point['distance_km']} km)",
-                icon=folium.Icon(color="blue")
-            ).add_to(route_map)
-            folium.PolyLine([(path[i-1]["lat"], path[i-1]["lon"]), (point["lat"], point["lon"])], color="blue").add_to(route_map)
-
-        st_folium(route_map, width=1000, height=550)
+    st_folium(m, width=1100, height=600)
