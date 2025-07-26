@@ -1,8 +1,8 @@
 streamlit
 pandas
-openrouteservice
 folium
 geopy
 streamlit-folium
 jinja2
 xhtml2pdf
+openrouteservice
