@@ -6,3 +6,4 @@ streamlit-folium
 jinja2
 xhtml2pdf
 openrouteservice
+openpyxl
