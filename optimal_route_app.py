@@ -7,7 +7,7 @@ from streamlit_folium import st_folium
 st.set_page_config(page_title="Optimal Site Visit Route Planner", layout="wide")
 st.title("📍 Optimal Site Visit Route Planner")
 
-st.markdown("Upload an Excel file with columns: **Latitude, Longitude, Address** (case-insensitive).")
+st.markdown("Upload an Excel file with columns: **Latitude, Longitude, Address**. Optionally, include **S/N** column.")
 
 # Upload
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
@@ -40,15 +40,32 @@ if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
         df.columns = df.columns.str.lower()
+
         required_cols = {"latitude", "longitude", "address"}
         if not required_cols.issubset(df.columns):
-            st.error("Excel must contain: Latitude, Longitude, Address (any casing).")
+            st.error("Excel must contain at least: Latitude, Longitude, Address (any casing).")
             st.stop()
 
-        # Clean and convert
-        df = df.rename(columns={"latitude": "Latitude", "longitude": "Longitude", "address": "Address"})
-        df = df.dropna(subset=["Latitude", "Longitude", "Address"])
+        has_sn = "s/n" in df.columns
 
+        # Rename columns to consistent format
+        rename_dict = {
+            "latitude": "Latitude",
+            "longitude": "Longitude",
+            "address": "Address"
+        }
+        if has_sn:
+            rename_dict["s/n"] = "S/N"
+
+        df = df.rename(columns=rename_dict)
+
+        # Drop rows with missing values
+        drop_cols = ["Latitude", "Longitude", "Address"]
+        if has_sn:
+            drop_cols.append("S/N")
+        df = df.dropna(subset=drop_cols)
+
+        # Convert to list of dicts
         locations = df.to_dict(orient="records")
 
         if use_user_location and user_lat != 0.0 and user_lon != 0.0:
@@ -68,28 +85,35 @@ if uploaded_file:
             distance = calculate_distance(current_point, site_coord)
             total_distance += distance
             route_coords.append(site_coord)
-            display_data.append({
+
+            row = {
                 "Address": loc["Address"],
                 "Latitude": loc["Latitude"],
                 "Longitude": loc["Longitude"],
                 "Distance from Previous (km)": round(distance, 2)
-            })
+            }
+            if has_sn:
+                row["S/N"] = loc["S/N"]
+
+            display_data.append(row)
             current_point = site_coord
 
-        # Display info
+        # Display total distance
         st.success(f"🛣️ Total Travel Distance: {round(total_distance, 2)} km")
 
+        # Display table
         st.subheader("📌 Locations in Visit Order")
         st.dataframe(pd.DataFrame(display_data))
 
-        # Show Map
+        # Show map
         m = folium.Map(location=route_coords[0], zoom_start=10, tiles="CartoDB positron")
 
         for i, coord in enumerate(route_coords):
+            tooltip_text = f"S/N: {ordered[i]['S/N']}" if has_sn else ordered[i]["Address"]
             folium.Marker(
                 coord,
                 popup=f"Stop {i+1}",
-                tooltip=ordered[i]["Address"],
+                tooltip=tooltip_text,
                 icon=folium.Icon(color="blue" if i > 0 else "green")
             ).add_to(m)
 
