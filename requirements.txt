@@ -4,3 +4,4 @@ openpyxl
 folium
 streamlit-folium
 geopy
+requests>=2.31.0
