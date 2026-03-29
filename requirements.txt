@@ -1,9 +1,6 @@
 streamlit
 pandas
-folium
-geopy
-streamlit-folium
-jinja2
-xhtml2pdf
-openrouteservice
 openpyxl
+folium
+streamlit-folium
+geopy
