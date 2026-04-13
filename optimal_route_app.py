@@ -12,13 +12,13 @@ from folium.plugins import BeautifyIcon
 # APP CONFIG
 # =========================
 st.set_page_config(page_title="🚀 Fast Route Optimizer", layout="wide")
-st.title("🇳🇬 Ultra-Fast Route Optimizer (Optimized OR-Tools)")
+st.title("🇳🇬 Ultra-Fast Route Optimizer (Stable Version)")
 
-uploaded_file = st.file_uploader("📂 Upload CSV or Excel", type=["xlsx", "csv"])
+uploaded_file = st.file_uploader("📂 Upload CSV or Excel file", type=["xlsx", "csv"])
 
 
 # =========================
-# FILE LOADER
+# FILE LOADER (FIXED)
 # =========================
 def load_file(file):
     name = file.name.lower()
@@ -29,20 +29,27 @@ def load_file(file):
         raw = pd.read_excel(file, header=None)
 
     header_row = None
+
     for i, row in raw.iterrows():
         r = [str(x).lower() for x in row.values if pd.notna(x)]
-        if any("lat" in x for x in r) and any("lon" in x or "lng" in r):
+
+        has_lat = any("lat" in x for x in r)
+        has_lon = any(("lon" in x or "lng" in x) for x in r)
+
+        if has_lat and has_lon:
             header_row = i
             break
 
     if header_row is None:
-        st.error("❌ Latitude/Longitude columns not found")
+        st.error("❌ Could not detect header row (Latitude/Longitude missing)")
         st.stop()
 
     if name.endswith(".csv"):
-        return pd.read_csv(file, header=header_row)
+        df = pd.read_csv(file, header=header_row)
     else:
-        return pd.read_excel(file, header=header_row)
+        df = pd.read_excel(file, header=header_row)
+
+    return df
 
 
 # =========================
@@ -62,16 +69,23 @@ def clean(df):
             mapping[c] = "Address"
 
     df = df.rename(columns=mapping)
-    df = df.dropna(subset=["Latitude", "Longitude", "Address"])
 
+    required = ["Latitude", "Longitude", "Address"]
+    for r in required:
+        if r not in df.columns:
+            st.error(f"❌ Missing required column: {r}")
+            st.stop()
+
+    df = df.dropna(subset=required)
     return df
 
 
 # =========================
-# FAST HAVERSINE (CORE SPEED BOOST)
+# FAST HAVERSINE
 # =========================
 def haversine_np(lat1, lon1, lat2, lon2):
     R = 6371000
+
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
 
     dlat = lat2 - lat1
@@ -96,16 +110,13 @@ def create_distance_matrix(locations):
     matrix = np.zeros((size, size), dtype=np.int32)
 
     for i in range(size):
-        matrix[i] = haversine_np(
-            lat[i], lon[i],
-            lat, lon
-        ).astype(np.int32)
+        matrix[i] = haversine_np(lat[i], lon[i], lat, lon).astype(np.int32)
 
     return matrix.tolist()
 
 
 # =========================
-# FAST OR-TOOLS TSP
+# OR-TOOLS TSP (OPTIMIZED)
 # =========================
 def solve_tsp(distance_matrix):
     manager = pywrapcp.RoutingIndexManager(len(distance_matrix), 1, 0)
@@ -125,7 +136,7 @@ def solve_tsp(distance_matrix):
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     )
 
-    # 🚀 SPEED BOOST SETTINGS
+    # 🚀 SPEED CONTROL
     search_params.time_limit.FromSeconds(3)
     search_params.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
@@ -174,6 +185,7 @@ def get_road_path(start, end):
 # MAIN APP
 # =========================
 if uploaded_file:
+
     df = load_file(uploaded_file)
     df = clean(df)
 
@@ -216,9 +228,9 @@ if uploaded_file:
     st_folium(m, width=1200, height=600)
 
     # =========================
-    # TABLE OUTPUT
+    # TABLE
     # =========================
-    st.subheader("📋 Route Order")
+    st.subheader("📋 Optimized Route Order")
 
     result = pd.DataFrame({
         "Step": range(1, len(optimized_names) + 1),
@@ -232,6 +244,6 @@ if uploaded_file:
     st.download_button(
         "⬇️ Download CSV",
         result.to_csv(index=False),
-        "route.csv",
+        "optimized_route.csv",
         "text/csv"
     )
