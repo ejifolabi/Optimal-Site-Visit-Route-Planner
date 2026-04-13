@@ -186,28 +186,53 @@ if uploaded_file:
         ).add_to(marker_cluster)
 
     for i in range(len(optimized_locations) - 1):
-        road = get_road_path(optimized_locations[i], optimized_locations[i + 1])
-        if road:
-            folium.PolyLine(road, color="blue", weight=5).add_to(m)
+        with st.spinner("🚦 Fetching route..."):
+            road = get_road_path(optimized_locations[i], optimized_locations[i + 1])
+            if road:
+                folium.PolyLine(road, color="blue", weight=5).add_to(m)
 
     st_folium(m, width=1200, height=600)
 
     # =========================
-    # RESULT TABLE
+    # RESULT TABLE (WITH SEARCH AND PAGINATION)
     # =========================
     st.subheader("📋 Optimized Route Order")
-    result = pd.DataFrame({
-        "Step": range(1, len(optimized_names) + 1),
-        "Location": optimized_names,
-        "Latitude": [x[0] for x in optimized_locations],
-        "Longitude": [x[1] for x in optimized_locations]
+
+    # Search input
+    search_query = st.text_input("Search for a location:", "")
+    
+    # Filter results based on search query
+    if search_query:
+        filtered_names = [name for name in optimized_names if search_query.lower() in name.lower()]
+        filtered_locations = [optimized_locations[i] for i, name in enumerate(optimized_names) if search_query.lower() in name.lower()]
+    else:
+        filtered_names = optimized_names
+        filtered_locations = optimized_locations
+
+    # Pagination setup
+    page_size = 10  # Number of rows per page
+    total_pages = len(filtered_names) // page_size + (len(filtered_names) % page_size > 0)
+    page = st.number_input("Select page:", min_value=1, max_value=total_pages, value=1, step=1)
+
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    paginated_result = pd.DataFrame({
+        "Step": range(start_idx + 1, min(end_idx, len(filtered_names)) + 1),
+        "Location": filtered_names[start_idx:end_idx],
+        "Latitude": [x[0] for x in filtered_locations[start_idx:end_idx]],
+        "Longitude": [x[1] for x in filtered_locations[start_idx:end_idx]]
     })
 
-    st.dataframe(result, use_container_width=True)
+    st.dataframe(paginated_result, use_container_width=True)
 
     st.download_button(
         "⬇️ Download CSV",
-        result.to_csv(index=False),
+        pd.concat([pd.DataFrame({"Step": range(1, len(filtered_names) + 1)}), 
+                    pd.Series(filtered_names, name='Location'), 
+                    pd.Series([x[0] for x in filtered_locations], name='Latitude'), 
+                    pd.Series([x[1] for x in filtered_locations], name='Longitude')], 
+                   axis=1).to_csv(index=False),
         "optimized_route.csv",
         "text/csv"
     )
+    
