@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 import requests
-from geopy.distance import geodesic
+import numpy as np
 from streamlit_folium import st_folium
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
@@ -11,10 +11,11 @@ from folium.plugins import BeautifyIcon
 # =========================
 # APP CONFIG
 # =========================
-st.set_page_config(page_title="🚀 Nigerian Route Optimizer", layout="wide")
-st.title("🇳🇬 Fast Route Optimizer (10x Faster with OR-Tools)")
+st.set_page_config(page_title="🚀 Fast Route Optimizer", layout="wide")
+st.title("🇳🇬 Ultra-Fast Route Optimizer (Optimized OR-Tools)")
 
-uploaded_file = st.file_uploader("📂 Upload your Excel or CSV file", type=["xlsx", "csv"])
+uploaded_file = st.file_uploader("📂 Upload CSV or Excel", type=["xlsx", "csv"])
+
 
 # =========================
 # FILE LOADER
@@ -22,35 +23,30 @@ uploaded_file = st.file_uploader("📂 Upload your Excel or CSV file", type=["xl
 def load_file(file):
     name = file.name.lower()
 
-    # Read raw file
     if name.endswith(".csv"):
         raw = pd.read_csv(file, header=None)
     else:
         raw = pd.read_excel(file, header=None)
 
-    # Detect header
     header_row = None
     for i, row in raw.iterrows():
         r = [str(x).lower() for x in row.values if pd.notna(x)]
-        if any("lat" in x for x in r) and any("lon" in x or "lng" in x for x in r):
+        if any("lat" in x for x in r) and any("lon" in x or "lng" in r):
             header_row = i
             break
 
     if header_row is None:
-        st.error("❌ Could not detect header row (Latitude/Longitude missing)")
+        st.error("❌ Latitude/Longitude columns not found")
         st.stop()
 
-    # Reload correctly with header
     if name.endswith(".csv"):
-        df = pd.read_csv(file, header=header_row)
+        return pd.read_csv(file, header=header_row)
     else:
-        df = pd.read_excel(file, header=header_row)
-
-    return df
+        return pd.read_excel(file, header=header_row)
 
 
 # =========================
-# CLEAN & PREPARE DATA
+# CLEAN DATA
 # =========================
 def clean(df):
     df.columns = [str(c).lower().strip() for c in df.columns]
@@ -64,71 +60,98 @@ def clean(df):
             mapping[c] = "Longitude"
         elif "address" in c or "site" in c or "name" in c:
             mapping[c] = "Address"
-        elif "s/n" in c or c in ["sn", "sno", "no"]:
-            mapping[c] = "S/N"
 
     df = df.rename(columns=mapping)
-    df = df.loc[:, ~df.columns.duplicated()]
+    df = df.dropna(subset=["Latitude", "Longitude", "Address"])
 
-    required = ["Latitude", "Longitude", "Address"]
-    for r in required:
-        if r not in df.columns:
-            st.error(f"❌ Missing required column: {r}")
-            st.stop()
-
-    return df.dropna(subset=required)
+    return df
 
 
 # =========================
-# DISTANCE MATRIX
+# FAST HAVERSINE (CORE SPEED BOOST)
+# =========================
+def haversine_np(lat1, lon1, lat2, lon2):
+    R = 6371000
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    c = 2 * np.arcsin(np.sqrt(a))
+
+    return R * c
+
+
+# =========================
+# DISTANCE MATRIX (FAST)
 # =========================
 @st.cache_data(show_spinner=False)
 def create_distance_matrix(locations):
-    size = len(locations)
-    matrix = [[0]*size for _ in range(size)]
+    coords = np.array(locations)
+    lat = coords[:, 0]
+    lon = coords[:, 1]
+
+    size = len(coords)
+    matrix = np.zeros((size, size), dtype=np.int32)
+
     for i in range(size):
-        for j in range(size):
-            if i != j:
-                dist = geodesic(locations[i], locations[j]).km
-                matrix[i][j] = int(dist * 1000)  # meters
-    return matrix
+        matrix[i] = haversine_np(
+            lat[i], lon[i],
+            lat, lon
+        ).astype(np.int32)
+
+    return matrix.tolist()
 
 
 # =========================
-# TSP SOLVER
+# FAST OR-TOOLS TSP
 # =========================
 def solve_tsp(distance_matrix):
     manager = pywrapcp.RoutingIndexManager(len(distance_matrix), 1, 0)
     routing = pywrapcp.RoutingModel(manager)
 
     def distance_callback(from_index, to_index):
-        return distance_matrix[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
+        return distance_matrix[
+            manager.IndexToNode(from_index)
+        ][manager.IndexToNode(to_index)]
 
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
     search_params = pywrapcp.DefaultRoutingSearchParameters()
-    search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+
+    search_params.first_solution_strategy = (
+        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    )
+
+    # 🚀 SPEED BOOST SETTINGS
+    search_params.time_limit.FromSeconds(3)
+    search_params.local_search_metaheuristic = (
+        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    )
 
     solution = routing.SolveWithParameters(search_params)
+
     if not solution:
         st.error("❌ Route optimization failed")
         st.stop()
 
     route = []
     index = routing.Start(0)
+
     while not routing.IsEnd(index):
         route.append(manager.IndexToNode(index))
         index = solution.Value(routing.NextVar(index))
+
     return route
 
 
 # =========================
-# OSRM ROUTE VISUALIZATION
+# OSRM ROUTE (FIXED)
 # =========================
 @st.cache_data(show_spinner=False)
 def get_road_path(start, end):
-    # OSRM expects: longitude,latitude
     start_lng, start_lat = start[1], start[0]
     end_lng, end_lat = end[1], end[0]
 
@@ -143,14 +166,12 @@ def get_road_path(start, end):
         if "routes" in r and r["routes"]:
             coords = r["routes"][0]["geometry"]["coordinates"]
             return [[lat, lon] for lon, lat in coords]
-    except Exception as e:
-        print("OSRM error:", e)
-
-    return None
+    except:
+        return None
 
 
 # =========================
-# MAIN LOGIC
+# MAIN APP
 # =========================
 if uploaded_file:
     df = load_file(uploaded_file)
@@ -159,9 +180,9 @@ if uploaded_file:
     locations = list(zip(df["Latitude"], df["Longitude"]))
     names = df["Address"].astype(str).tolist()
 
-    st.success(f"✅ {len(locations)} locations loaded successfully")
+    st.success(f"✅ Loaded {len(locations)} locations")
 
-    with st.spinner("⚡ Computing optimal route (Using OR-Tools)..."):
+    with st.spinner("⚡ Optimizing route..."):
         dist_matrix = create_distance_matrix(locations)
         route_idx = solve_tsp(dist_matrix)
 
@@ -169,43 +190,39 @@ if uploaded_file:
     optimized_names = [names[i] for i in route_idx]
 
     # =========================
-    # MAP DISPLAY
+    # MAP
     # =========================
     st.subheader("🗺️ Optimized Route Map")
 
-    start_loc = optimized_locations[0]
-    m = folium.Map(location=start_loc, zoom_start=10, tiles="CartoDB positron")
+    m = folium.Map(location=optimized_locations[0], zoom_start=10)
 
-    # Numbered markers with icons
     for i, loc in enumerate(optimized_locations):
         folium.Marker(
             loc,
             tooltip=f"{i+1}. {optimized_names[i]}",
             icon=BeautifyIcon(
                 number=i + 1,
-                border_color="#000000",
+                border_color="black",
                 text_color="white",
                 background_color="#007bff",
-                inner_icon_style="margin-top:-1px;",
             ),
         ).add_to(m)
 
-    # Draw road paths
     for i in range(len(optimized_locations) - 1):
         road = get_road_path(optimized_locations[i], optimized_locations[i + 1])
         if road:
-            folium.PolyLine(road, color="blue", weight=5, opacity=0.8).add_to(m)
+            folium.PolyLine(road, color="blue", weight=5).add_to(m)
 
     st_folium(m, width=1200, height=600)
 
     # =========================
-    # RESULT TABLE
+    # TABLE OUTPUT
     # =========================
-    st.subheader("📋 Optimized Route Order")
+    st.subheader("📋 Route Order")
 
     result = pd.DataFrame({
         "Step": range(1, len(optimized_names) + 1),
-        "Location Name": optimized_names,
+        "Location": optimized_names,
         "Latitude": [x[0] for x in optimized_locations],
         "Longitude": [x[1] for x in optimized_locations]
     })
@@ -213,8 +230,8 @@ if uploaded_file:
     st.dataframe(result, use_container_width=True)
 
     st.download_button(
-        "⬇️ Download Optimized Route CSV",
+        "⬇️ Download CSV",
         result.to_csv(index=False),
-        "optimized_route.csv",
+        "route.csv",
         "text/csv"
     )
