@@ -11,14 +11,14 @@ from folium.plugins import BeautifyIcon
 # =========================
 # APP CONFIG
 # =========================
-st.set_page_config(page_title="🚀 Fast Route Optimizer", layout="wide")
-st.title("🇳🇬 Ultra-Fast Route Optimizer (Stable Version)")
+st.set_page_config(page_title="🚀 Route Optimizer Pro", layout="wide")
+st.title("🇳🇬 Ultra-Fast Route Optimizer (Production Stable)")
 
-uploaded_file = st.file_uploader("📂 Upload CSV or Excel file", type=["xlsx", "csv"])
+uploaded_file = st.file_uploader("📂 Upload CSV or Excel", type=["xlsx", "csv"])
 
 
 # =========================
-# FILE LOADER (FIXED)
+# FILE LOADER
 # =========================
 def load_file(file):
     name = file.name.lower()
@@ -41,7 +41,7 @@ def load_file(file):
             break
 
     if header_row is None:
-        st.error("❌ Could not detect header row (Latitude/Longitude missing)")
+        st.error("❌ Could not detect header row (lat/lon missing)")
         st.stop()
 
     if name.endswith(".csv"):
@@ -53,30 +53,35 @@ def load_file(file):
 
 
 # =========================
-# CLEAN DATA
+# CLEAN (ROBUST FIX)
 # =========================
 def clean(df):
-    df.columns = [str(c).lower().strip() for c in df.columns]
+    df.columns = [str(c).strip().lower() for c in df.columns]
     df = df.loc[:, ~df.columns.str.contains("unnamed")]
 
-    mapping = {}
-    for c in df.columns:
-        if "lat" in c:
-            mapping[c] = "Latitude"
-        elif "lon" in c or "lng" in c:
-            mapping[c] = "Longitude"
-        elif "address" in c or "site" in c or "name" in c:
-            mapping[c] = "Address"
+    def find_col(keys):
+        for c in df.columns:
+            for k in keys:
+                if k in c:
+                    return c
+        return None
 
-    df = df.rename(columns=mapping)
+    lat_col = find_col(["lat"])
+    lon_col = find_col(["lon", "lng"])
+    addr_col = find_col(["address", "site", "name", "location", "stop", "customer"])
 
-    required = ["Latitude", "Longitude", "Address"]
-    for r in required:
-        if r not in df.columns:
-            st.error(f"❌ Missing required column: {r}")
-            st.stop()
+    if not lat_col or not lon_col or not addr_col:
+        st.error("❌ Missing required columns")
+        st.write("Detected columns:", list(df.columns))
+        st.stop()
 
-    df = df.dropna(subset=required)
+    df = df.rename(columns={
+        lat_col: "Latitude",
+        lon_col: "Longitude",
+        addr_col: "Address"
+    })
+
+    df = df.dropna(subset=["Latitude", "Longitude", "Address"])
     return df
 
 
@@ -91,7 +96,7 @@ def haversine_np(lat1, lon1, lat2, lon2):
     dlat = lat2 - lat1
     dlon = lon2 - lon1
 
-    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    a = np.sin(dlat / 2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2)**2
     c = 2 * np.arcsin(np.sqrt(a))
 
     return R * c
@@ -116,7 +121,7 @@ def create_distance_matrix(locations):
 
 
 # =========================
-# OR-TOOLS TSP (OPTIMIZED)
+# OR-TOOLS TSP (FAST + SAFE)
 # =========================
 def solve_tsp(distance_matrix):
     manager = pywrapcp.RoutingIndexManager(len(distance_matrix), 1, 0)
@@ -136,7 +141,6 @@ def solve_tsp(distance_matrix):
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     )
 
-    # 🚀 SPEED CONTROL
     search_params.time_limit.FromSeconds(3)
     search_params.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
@@ -228,7 +232,7 @@ if uploaded_file:
     st_folium(m, width=1200, height=600)
 
     # =========================
-    # TABLE
+    # RESULT TABLE
     # =========================
     st.subheader("📋 Optimized Route Order")
 
