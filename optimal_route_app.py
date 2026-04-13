@@ -19,6 +19,16 @@ st.sidebar.header("Upload and Settings")
 uploaded_file = st.sidebar.file_uploader("📂 Upload CSV or Excel", type=["xlsx", "csv"])
 
 # =========================
+# HELPER FUNCTION TO FIND COLUMN
+# =========================
+def find_col(keys, df):
+    for c in df.columns:
+        for k in keys:
+            if k in c:
+                return c
+    return None
+
+# =========================
 # FILE LOADER
 # =========================
 def load_file(file):
@@ -51,9 +61,9 @@ def clean(df):
     df.columns = [str(c).strip().lower() for c in df.columns]
     df = df.loc[:, ~df.columns.str.contains("unnamed")]
 
-    lat_col = find_col(["lat"])
-    lon_col = find_col(["lon", "lng"])
-    addr_col = find_col(["address", "site", "name", "location", "stop", "customer"])
+    lat_col = find_col(["lat"], df)
+    lon_col = find_col(["lon", "lng"], df)
+    addr_col = find_col(["address", "site", "name", "location", "stop", "customer"], df)
 
     if not lat_col or not lon_col or not addr_col:
         st.error("❌ Missing required columns")
