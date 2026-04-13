@@ -128,7 +128,16 @@ def solve_tsp(distance_matrix):
 # =========================
 @st.cache_data(show_spinner=False)
 def get_road_path(start, end):
-    url = f"[router.project-osrm.org](http://router.project-osrm.org/route/v1/driving/{start)[1]},{start[0]};{end[1]},{end[0]}?overview=full&geometries=geojson"
+    # OSRM expects: longitude,latitude
+    start_lng, start_lat = start[1], start[0]
+    end_lng, end_lat = end[1], end[0]
+
+    url = (
+        f"http://router.project-osrm.org/route/v1/driving/"
+        f"{start_lng},{start_lat};{end_lng},{end_lat}"
+        f"?overview=full&geometries=geojson"
+    )
+
     try:
         r = requests.get(url, timeout=10).json()
         if "routes" in r and r["routes"]:
@@ -136,6 +145,7 @@ def get_road_path(start, end):
             return [[lat, lon] for lon, lat in coords]
     except Exception as e:
         print("OSRM error:", e)
+
     return None
 
 
