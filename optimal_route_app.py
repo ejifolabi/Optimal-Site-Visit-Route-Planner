@@ -18,19 +18,27 @@ uploaded_file = st.file_uploader("Upload Excel/CSV", type=["xlsx", "csv"])
 def load_file(file):
     name = file.name.lower()
 
+    # Read raw file
     raw = pd.read_csv(file, header=None) if name.endswith('.csv') else pd.read_excel(file, header=None)
 
     header_row = None
+
     for i, row in raw.iterrows():
-        r = row.astype(str).str.lower().tolist()
-        if any('lat' in x for x in r) and any('lon' in x for x in r):
+        # ✅ SAFE STRING CONVERSION
+        r = [str(x).lower() for x in row.values if pd.notna(x)]
+
+        if (
+            any('lat' in x for x in r) and
+            any('lon' in x or 'lng' in x for x in r)
+        ):
             header_row = i
             break
 
     if header_row is None:
-        st.error("No header found")
+        st.error("❌ Could not detect header row (Latitude/Longitude missing)")
         st.stop()
 
+    # Reload correctly
     df = pd.read_csv(file, header=header_row) if name.endswith('.csv') else pd.read_excel(file, header=header_row)
 
     return df
